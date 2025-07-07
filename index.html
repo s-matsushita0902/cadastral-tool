@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>地籍XML → DXF/STL 変換ツール</title>
+  <style>
+    body { font-family: sans-serif; max-width: 700px; margin: 2em auto; }
+    h1 { font-size: 1.5em; }
+    input, select, button { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>地籍XML → DXF / STL 変換ツール</h1>
+  <p>地籍XMLファイル（.xml）をアップロードし、出力形式を選んで変換します。</p>
+  <input type="file" id="xmlFile" accept=".xml"><br>
+  <label for="formatSelect">出力形式：</label>
+  <select id="formatSelect">
+    <option value="stl">STL</option>
+    <option value="dxf">DXF</option>
+  </select><br>
+  <button onclick="convert()">変換してダウンロード</button>
+  <p id="status"></p>
+
+  <script>
+    function convert() {
+      const fileInput = document.getElementById('xmlFile');
+      const format = document.getElementById('formatSelect').value;
+      const file = fileInput.files[0];
+      if (!file) {
+        alert('XMLファイルを選択してください');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        const parser = new DOMParser();
+        const xml = parser.parseFromString(text, "text/xml");
+
+        const ns = "http://www.moj.go.jp/MINJI/tizuzumen";
+        const gmPoints = xml.getElementsByTagNameNS(ns, "GM_Point");
+        const gmCurves = xml.getElementsByTagNameNS(ns, "GM_Curve");
+
+        const pointDict = {};
+        for (let pt of gmPoints) {
+          const id = pt.getAttribute("id");
+          const x = parseFloat(pt.getElementsByTagNameNS(ns, "X")[0].textContent);
+          const y = parseFloat(pt.getElementsByTagNameNS(ns, "Y")[0].textContent);
+          const yFlip = -y;
+          const x1 = yFlip;
+          const y1 = x;
+          const xFinal = -x1;
+          const yFinal = y1;
+          pointDict[id] = [xFinal, yFinal];
+        }
+
+        let curveLines = [];
+
+        for (let curve of gmCurves) {
+          let columns = curve.getElementsByTagNameNS(ns, "GM_PointArray.column");
+          let coords = [];
+          for (let col of columns) {
+            let direct = col.getElementsByTagNameNS(ns, "GM_Position.direct")[0];
+            let indirect = col.getElementsByTagNameNS(ns, "GM_PointRef.point")[0];
+            let xFinal, yFinal;
+            if (direct) {
+              const x = parseFloat(direct.getElementsByTagNameNS(ns, "X")[0].textContent);
+              const y = parseFloat(direct.getElementsByTagNameNS(ns, "Y")[0].textContent);
+              const yFlip = -y;
+              const x1 = yFlip;
+              const y1 = x;
+              xFinal = -x1;
+              yFinal = y1;
+            } else if (indirect) {
+              const ref = indirect.getAttribute("idref");
+              if (pointDict[ref]) {
+                [xFinal, yFinal] = pointDict[ref];
+              } else {
+                continue;
+              }
+            }
+            coords.push([xFinal, yFinal]);
+          }
+          if (coords.length >= 2) {
+            curveLines.push(coords);
+          }
+        }
+
+        if (curveLines.length === 0) {
+          document.getElementById("status").textContent = "⚠️ 変換できる線が見つかりませんでした。";
+          return;
+        }
+
+        const allPoints = curveLines.flat();
+        let xs = allPoints.map(p => p[0]);
+        let ys = allPoints.map(p => p[1]);
+        let offsetX = Math.min(...xs);
+        let offsetY = Math.min(...ys);
+        curveLines = curveLines.map(line => line.map(([x, y]) => [x - offsetX, y - offsetY]));
+
+        if (format === "dxf") {
+          let dxf = "0\nSECTION\n2\nENTITIES\n";
+          for (let line of curveLines) {
+            for (let i = 0; i < line.length - 1; i++) {
+              const [x1, y1] = line[i];
+              const [x2, y2] = line[i+1];
+              dxf += "0\nLINE\n8\n0\n10\n" + x1 + "\n20\n" + y1 + "\n30\n0\n11\n" + x2 + "\n21\n" + y2 + "\n31\n0\n";
+            }
+          }
+          dxf += "0\nENDSEC\n0\nEOF";
+          const blob = new Blob([dxf], {type: "application/dxf"});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "converted.dxf";
+          a.click();
+        } else if (format === "stl") {
+          const thickness = 0.01;
+          let triangles = [];
+
+          for (let line of curveLines) {
+            for (let i = 0; i < line.length - 1; i++) {
+              const [x1, y1] = line[i];
+              const [x2, y2] = line[i+1];
+              const dx = x2 - x1;
+              const dy = y2 - y1;
+              const len = Math.hypot(dx, dy);
+              if (len === 0) continue;
+              const nx = -dy / len * thickness / 2;
+              const ny = dx / len * thickness / 2;
+
+              const p1 = [x1 + nx, y1 + ny, 0];
+              const p2 = [x1 - nx, y1 - ny, 0];
+              const p3 = [x2 + nx, y2 + ny, 0];
+              const p4 = [x2 - nx, y2 - ny, 0];
+
+              triangles.push([p1, p2, p3]);
+              triangles.push([p2, p4, p3]);
+            }
+          }
+
+          const bufferSize = 84 + triangles.length * 50;
+          const buffer = new ArrayBuffer(bufferSize);
+          const view = new DataView(buffer);
+          // 80バイトのヘッダは空白
+          view.setUint32(80, triangles.length, true);
+          let offset = 84;
+
+          for (let tri of triangles) {
+            for (let i = 0; i < 12; i++) view.setUint8(offset++, 0); // 法線ベクトル = 0
+
+            for (let pt of tri) {
+              for (let i = 0; i < 3; i++) {
+                view.setFloat32(offset, pt[i], true);
+                offset += 4;
+              }
+            }
+            view.setUint16(offset, 0, true); // 属性 byte count
+            offset += 2;
+          }
+
+          const blob = new Blob([buffer], {type: "application/octet-stream"});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "converted.stl";
+          a.click();
+        }
+
+        document.getElementById("status").textContent = "✅ 変換が完了しました。";
+      };
+      reader.readAsText(file);
+    }
+  </script>
+</body>
+</html>
