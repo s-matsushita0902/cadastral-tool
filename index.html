@@ -11,14 +11,14 @@
 </head>
 <body>
   <h1>地籍XML → DXF / STL 変換ツール</h1>
-  <p>地籍XMLファイル（.xml）をアップロードし、出力形式を選んで変換します。</p>
+  <p>地籍XMLファイル（.xml）を選択し、出力形式を選んで変換します。</p>
   <input type="file" id="xmlFile" accept=".xml"><br>
   <label for="formatSelect">出力形式：</label>
   <select id="formatSelect">
     <option value="stl">STL</option>
     <option value="dxf">DXF</option>
   </select><br>
-  <button onclick="convert()">変換してダウンロード</button>
+  <button onclick="convert()">変換して保存</button>
   <p id="status"></p>
 
   <script>
